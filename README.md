@@ -1,206 +1,95 @@
 # sim-telemetry
 
+[![CI](https://github.com/RutuK2005/sim-telemetry/actions/workflows/ci.yml/badge.svg)](https://github.com/RutuK2005/sim-telemetry/actions/workflows/ci.yml) ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 ▶️ **[Watch the driving-simulator rig in action (YouTube)](https://www.youtube.com/watch?v=30tbnoA9A_E)**
 
 [![SIH 2025 driving-simulator rig](docs/images/rig-wheel-and-column.jpg)](https://www.youtube.com/watch?v=30tbnoA9A_E)
 
-A real-time telemetry pipeline for a serial-connected driving-simulator rig. A microcontroller
-(or the built-in simulator) streams compact binary frames - steering, throttle, brake, gear,
-speed, rpm - over a serial line; the Python host decodes them in a background thread, survives
-corrupted and missing bytes, logs sessions to CSV/Parquet, shows a live browser dashboard over
-WebSocket, and summarises recorded sessions with Pandas. Everything runs without hardware: a
-simulated car laps a simple track and produces physically consistent data, either in-process
-or through a real pyserial `loop://` port. The project grew out of my Smart India Hackathon 2025
-driving-simulator work, where the rig's hardware streamed telemetry to Python via PySerial; this
-is a cleaned-up, standalone rebuild of that idea, not the hackathon code itself.
+Telemetry logging for a home-built driving simulator. A microcontroller on the rig streams steering, throttle, brake, gear, speed and rpm over serial. This Python side reads it, survives corrupted or dropped bytes, saves sessions to CSV/Parquet, shows a live dashboard in the browser, and summarises sessions with pandas.
 
-## The hardware
+It comes from the driving simulator our team built for Smart India Hackathon 2025 (we won the internal round). Hardware details, photos and the parts list are in [docs/hardware.md](docs/hardware.md). This repo is a standalone rebuild of the logging side, not the code we ran at the hackathon. It also runs without the rig: a built-in simulated car drives laps around a track and produces the same data.
 
 | | |
 |---|---|
 | ![3D-printed steering wheel](docs/images/rig-steering-wheel.jpg) | ![Pedal box](docs/images/rig-pedals.jpg) |
 
-Our team's working rig for Smart India Hackathon 2025 (internal round winner): an Arduino Leonardo
-reading a 600 PPR encoder on the steering, three potentiometer pedals and limit-switch paddle
-shifters, with motor force feedback, driving the CARLA simulator. Built for about ₹6,700.
-Components, data flow, photos and the demo video are in [docs/hardware.md](docs/hardware.md).
-
-## Architecture
+## How it works
 
 ```mermaid
 flowchart LR
-    subgraph Device
-        FW["Arduino firmware<br/>(reference sketch)"]
-        SIM["SimulatedDevice<br/>lap simulator"]
-    end
-    FW -- "serial bytes" --> T
-    SIM --> T["Transport<br/>Serial | loop:// | sim | .bin file"]
-    T --> R["TelemetryReader thread<br/>FrameParser: resync, CRC, seq gaps"]
-    R --> Q[("bounded queue")]
-    Q --> L["SessionLogger<br/>CSV / Parquet"]
-    Q --> S["RollingStats<br/>rate, drops, latency"]
-    Q --> F["LiveFeed (asyncio)"]
-    F -- "JSON every 100 ms" --> WS["FastAPI /ws"]
-    WS --> B["Browser<br/>Chart.js dashboard"]
-    L --> A["analyze<br/>Pandas summary"]
+    D[Arduino / simulated car] -- serial bytes --> P[parser thread<br/>resync, CRC, drop count]
+    P --> Q[(queue)]
+    Q --> L[CSV / Parquet logger]
+    Q --> S[stats: rate, drops, latency]
+    Q --> W[FastAPI WebSocket] --> B[browser dashboard]
+    L --> A[pandas session summary]
 ```
 
-## Frame format
+Serial is just a stream of bytes, so every packet starts with a sync word, carries a sequence number, and ends with a CRC. If a packet is corrupted, the parser skips one byte and searches again, so it doesn't lose the next good packet. Gaps in the sequence numbers show how many packets were dropped.
 
-All multi-byte fields are little-endian. One frame is 20 bytes.
+The reader runs in its own thread so the serial port is always drained even if the disk or the browser is slow. The dashboard gets one batched update every 100 ms instead of one message per packet.
 
-| Offset | Size | Field          | Type   | Notes                                              |
-|-------:|-----:|----------------|--------|----------------------------------------------------|
-| 0      | 2    | sync           | bytes  | `0xAA 0x55`, marks the start of a frame            |
-| 2      | 1    | length         | u8     | payload length, `9` for this payload version       |
-| 3      | 2    | seq            | u16    | increments per frame, wraps at 65535 -> 0          |
-| 5      | 4    | timestamp_ms   | u32    | device clock, ms since boot                        |
-| 9      | 9    | payload        | -      | see below                                          |
-| 18     | 2    | crc16          | u16    | CRC-16/CCITT-FALSE over bytes 2..17 (length..payload) |
+## Packet format
 
-Payload (fixed-point integers keep the frame small):
+20 bytes, little-endian:
 
-| Offset | Size | Field     | Type | Unit / scale                       |
-|-------:|-----:|-----------|------|------------------------------------|
-| 9      | 2    | steering  | i16  | 0.1 degree, negative = left        |
-| 11     | 1    | throttle  | u8   | percent 0-100                      |
-| 12     | 1    | brake     | u8   | percent 0-100                      |
-| 13     | 1    | gear      | i8   | -1 = reverse, 0 = neutral, 1-6     |
-| 14     | 2    | speed     | u16  | 0.01 km/h                          |
-| 16     | 2    | rpm       | u16  | revolutions per minute             |
+| Bytes | Field | Notes |
+|---|---|---|
+| 0–1 | sync | `0xAA 0x55` |
+| 2 | length | payload length (9) |
+| 3–4 | seq | wraps at 65535 |
+| 5–8 | timestamp | ms since the device booted |
+| 9–10 | steering | 0.1°, negative = left |
+| 11 | throttle | 0–100 % |
+| 12 | brake | 0–100 % |
+| 13 | gear | -1 reverse, 0 neutral, 1–6 |
+| 14–15 | speed | 0.01 km/h |
+| 16–17 | rpm | |
+| 18–19 | CRC-16/CCITT | over bytes 2–17 |
 
-## Quickstart
+Values are scaled integers rather than floats, which keeps packets small and easy to produce on an Arduino.
 
-Requires Python 3.12+.
+## Running it
 
 ```bash
-git clone https://github.com/RutuK2005/sim-telemetry.git
-cd sim-telemetry
 python -m venv .venv
-# Windows: .venv\Scripts\activate      Linux/macOS: source .venv/bin/activate
-pip install -e ".[dev]"        # or: pip install -e ".[parquet]" without the test tools
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+
+sim-telemetry simulate --count 5                                   # print a few packets
+sim-telemetry record --port sim --out session.csv --seconds 30     # record from the simulated car
+sim-telemetry analyze session.csv                                  # max speed, braking events, gear usage...
+sim-telemetry serve --source sim                                   # live dashboard on http://127.0.0.1:8000
 ```
 
-```bash
-# Peek at a few frames: raw hex plus decoded values
-sim-telemetry simulate --count 5
+With the real rig, use the serial port instead of `sim`, e.g. `--port COM3`. `--noise 0.02` corrupts 2% of packets on purpose, if you want to see the error handling work.
 
-# Record 30 s from the in-process simulator, with 2 % of frames damaged on purpose
-sim-telemetry record --port sim --out session.csv --seconds 30 --noise 0.02
-
-# Same, but the bytes travel through a real pyserial port (loop://)
-sim-telemetry record --port loop:// --out session.parquet --seconds 30
-
-# Write a 2-minute raw capture, then replay it through the full pipeline
-sim-telemetry simulate --out capture.bin --seconds 120 --noise 0.01 --seed 7
-sim-telemetry record --port capture.bin --out replay.csv
-sim-telemetry analyze replay.csv
-
-# Summarise a session: max speed, avg throttle, braking events, gear usage
-sim-telemetry analyze session.csv
-
-# Live dashboard at http://127.0.0.1:8000
-sim-telemetry serve --source sim --noise 0.01
-```
-
-With real hardware, use the serial port name instead of `sim`, e.g.
-`sim-telemetry record --port COM3 --out session.csv` or `--port /dev/ttyUSB0`. `--baud`
-defaults to 115200. `python -m sim_telemetry ...` works too.
-
-`analyze replay.csv` for that seeded capture prints (simulated data, trimmed):
+Example `analyze` output for a 2-minute simulated session:
 
 ```
 Samples            5960
-Duration           120.0 s
 Max speed          213.9 km/h
 Average throttle   64.6 %
 Braking events     10
 Dropped packets    40
-Gear usage
-   4  ###################                       47.8%
-   5  ################                          39.2%
-   ...
 ```
 
-## Design decisions and trade-offs
+## Firmware
 
-- **Sync word + length + CRC.** Serial is a byte stream with no message boundaries. The sync
-  word gives the parser something to search for, the length byte says where the CRC sits (and
-  leaves room for future payload versions), and the CRC rejects corrupted frames. CRC-16 catches
-  all single-bit and burst errors up to 16 bits, which a simple additive checksum does not.
-- **Resync by skipping one byte, not one frame.** When a CRC fails, the "frame" may have been a
-  false sync inside garbage, with a real frame starting a few bytes later. Dropping just the first
-  byte and searching again recovers that frame. The fuzz tests check this with random garbage,
-  planted fake sync words and bit flips, fed in random chunk sizes.
-- **Sequence numbers for loss detection.** A CRC failure and a byte lost by the UART both show
-  up as a gap in `seq`. A backwards jump is counted as a device reset instead of ~65k drops.
-- **Fixed-point payload.** Integers with a known scale (0.1 deg, 0.01 km/h) keep frames at
-  20 bytes and are cheap to produce on a microcontroller without floating point.
-- **Reader thread + bounded queue.** The serial port must be drained continuously; consumers
-  (disk, web) can stall. The queue decouples them. For live sources a full queue drops the
-  *oldest* frame (fresh data matters most and the reader never blocks); for file replays the
-  reader blocks instead (backpressure), because nothing is lost by waiting.
-- **Latency without synchronised clocks.** The device only knows "ms since boot". The stats
-  track `host_time - device_time` and report it relative to the best frame seen, which measures
-  buffering delay and jitter rather than true one-way latency.
-- **Batching to the browser.** The dashboard pushes one JSON message every 100 ms containing
-  all new samples, instead of one message per frame, so the browser redraws 10 times a second.
-- **CSV streams, Parquet buffers.** CSV rows are flushed as they arrive (crash-safe); Parquet
-  is columnar, so rows are buffered and written on close. Fine for sessions of minutes, not days.
-- **Pure-Python parser.** Easy to read and test. On my development laptop (Python 3.14,
-  Windows) `python scripts/bench_parser.py` decoded 100,000 frames in 0.54 s (about 186,000
-  frames/s); a 115200-baud link carries at most 576 of these 20-byte frames per second, so the
-  parser is not the bottleneck. Numbers will differ on other machines - run the script yourself.
+`firmware/sim_telemetry_reference/` has an Arduino Leonardo sketch for the rig's sensors (steering encoder on an interrupt, three pedal pots, paddle switches) that sends this packet format at 50 Hz. It's a reference sketch and hasn't been flashed to the rig yet; pin numbers and calibration are examples.
 
-## Project layout
-
-```
-src/sim_telemetry/
-  protocol.py    frame layout, CRC-16, encode/decode
-  parser.py      streaming decoder: resync, CRC check, drop detection
-  simulator.py   track + lap simulator, simulated device, link noise
-  transport.py   Serial / loop:// / in-process sim / file transports
-  reader.py      background reader thread and bounded queue
-  stats.py       rolling packet rate, drop rate, latency
-  logger.py      CSV / Parquet session logger
-  analysis.py    Pandas session summary
-  dashboard.py   FastAPI app + WebSocket feed
-  static/index.html  single-page dashboard (Chart.js 4.4.1 from cdnjs)
-  cli.py         argparse CLI
-firmware/        reference Arduino sketch emitting the same frames
-docs/hardware.md the SIH rig: components, data flow, photos
-scripts/         parser benchmark
-tests/           pytest suite
-```
-
-## Running tests
+## Tests
 
 ```bash
-pytest            # unit, fuzz, threading, CLI and WebSocket tests; no network needed
+pytest
 ruff check .
-ruff format --check .
 ```
 
-CI runs the same commands on Ubuntu with Python 3.12 and 3.13.
+The parser tests feed it random garbage, fake sync bytes and bit flips to make sure it always recovers. In a quick benchmark on my laptop the parser handled about 186k packets/s, far more than a 115200-baud serial link can carry (around 576 packets/s), so pure Python is fine here.
 
-## Reference firmware
+## TODO
 
-`firmware/sim_telemetry_reference/sim_telemetry_reference.ino` is a short Arduino Leonardo
-sketch for the rig's sensor set: it counts the steering encoder on an interrupt, reads the
-pedal potentiometers and paddle-shifter switches, and emits the same 20-byte frame at 50 Hz.
-It is reference code for reading alongside `protocol.py`, not the firmware we ran at SIH: pin
-numbers and calibration are examples, and it has not been flashed to hardware. A unit test
-rebuilds a frame byte-by-byte the way the sketch does and checks it matches `encode_frame`.
-
-## Next steps
-
-- Payload v2 with a clutch field (the rig has a clutch pedal; the v1 frame doesn't carry it).
-- Device-to-host commands (e.g. force-feedback strength) using the same framing in reverse.
-- A Parquet writer that flushes row groups periodically, for long sessions.
-- Lap detection and lap-by-lap comparison in `analyze` (needs a position or lap-beacon field).
-- Estimate clock drift between device and host instead of using a fixed best-case offset.
-- Move the CRC to a C extension or `crcmod` if much higher frame rates are ever needed.
-
-## License
-
-MIT - see [LICENSE](LICENSE).
+- Add the clutch pedal to the packet (needs a v2 payload)
+- Send force-feedback settings back to the device using the same framing
+- Lap detection and lap-by-lap comparison
