@@ -1,6 +1,6 @@
 # The hardware: SIH 2025 driving simulator
 
-▶️ **Demo video:** https://www.youtube.com/watch?v=30tbnoA9A_E
+Demo video: https://www.youtube.com/watch?v=30tbnoA9A_E
 
 This is the rig that `sim-telemetry` grew out of. Our team (X86, DY Patil International University) built it for Smart India Hackathon 2025, problem statement SIH25119 (Student Innovation, theme: Smart Vehicles, hardware category), and it won the internal round. The rig is working: wheel, force feedback, pedals and paddle shifters all drive the simulator, as shown in the video.
 
@@ -31,7 +31,7 @@ The wheel, column frame, gears, paddles and pedal box are 3D printed.
 |---|---|
 | Arduino Leonardo | Reads every sensor. Picked because it has native USB HID, so the PC sees it as a game controller without extra drivers. |
 | 600 PPR optical rotary encoder | Steering angle. Geared 1:4 to the wheel, so one wheel turn gives 2400 pulses. |
-| 3 × 20k potentiometers | Accelerator, brake and clutch pedals (analog). |
+| 3 x 20k potentiometers | Accelerator, brake and clutch pedals (analog). |
 | Limit switches | Sequential paddle shifters (gear up / gear down). |
 | IBT2 motor driver + 37JGB motor | Force feedback on the steering wheel. |
 | 120 W power supply | Powers the motor side. A custom VGA cable carries the wheel signals. |
@@ -59,7 +59,7 @@ From our SIH comparison slide:
 | Data logging | No | Yes |
 | Custom wheel / real car buttons (indicators etc.) | No | Yes |
 
-The G29 is a polished retail product with years of refinement. Ours is a working, hand-built prototype at about a fifth of the price.
+The G29 is a finished retail product and ours is a hand-built prototype, but it works and cost about a fifth as much.
 
 ## How this repo relates to the rig
 

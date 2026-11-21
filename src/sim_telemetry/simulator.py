@@ -1,6 +1,6 @@
 """A simulated rig: a simple car lapping a simple track, emitting real frames.
 
-The driving model is the classic "quasi-steady-state lap simulation":
+The driving model is a quasi-steady-state lap simulation:
 
 1. Sample the track every metre and store its curvature (1 / radius).
 2. In each corner the speed is limited by grip: ``v = sqrt(a_lat * radius)``.
