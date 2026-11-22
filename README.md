@@ -10,7 +10,7 @@ Our team built this rig for Smart India Hackathon 2025 and it won the internal r
 
 You don't need the rig to try it. A simulated car drives laps around a track and sends the same packets. The parts list, build photos and cost breakdown are in [docs/hardware.md](docs/hardware.md).
 
-## Running it
+## Running it 
 
 ```bash
 python -m venv .venv
